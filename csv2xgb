@@ -56,7 +56,7 @@ my $hfp;
 if( defined( $header_file ) ){
 	my $date = `date "+%F (%A) %T %Z"`;
 	chomp $date;
-	open $hfp, ">$header_file" or die "Could not open file $headerfile";
+	open $hfp, ">$header_file" or die "Could not open file $header_file";
 	$verbose and to_stderr( "Opened header file: $header_file");
 	print $hfp "# $date : $arguments\n";
 }
@@ -89,7 +89,7 @@ foreach my $ifile (@ARGV){
 			$varno{$key[$i]} = $i;             # key to variable number map. : variable name -> number 
 			defined( $header_file ) and print $hfp " $i:$key[$i]";
 		}
-		defined( $header_file and print $hfp "\n";
+		defined( $header_file ) and print $hfp "\n";
 		if( defined( $target) and !defined( $varno{$target} ) ){
 			die "target variable not identified.";
 		}
