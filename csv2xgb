@@ -44,7 +44,7 @@ sub print_help{
 	[-verbose]
 	[-header_file : Since crs takes no header, use this option to create a separate header file!]
 	[-ignore_zero : This is the default: plain zeros NOT discarded. So negate this if you want to discard them (-no-ignore_zero)!]
-\n"
+\n";
 	exit();
 }
 
