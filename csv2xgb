@@ -1,0 +1,125 @@
+#!/usr/bin/perl -w 
+#
+# Apo Yoman (apoyoman@gmail.com)
+# April 15, 2016
+#
+use strict;
+use Text::CSV_XS;
+use Getopt::Long;
+
+my $help =0;
+my $maxid=10000000000000000000;
+my $id_var_name = "Id";
+my $target;
+my $verbose=0;
+my $nullval = -1;
+my $ignore_zero=1;
+my $header_file;
+
+my $arguments = join ' ', $0, @ARGV;
+my $oresult = GetOptions( 'maxid=i' => \$maxid,  
+	'help+' => \$help,  'id_var_name=s' => \$id_var_name, 'tvn=s' => \$target, 'verbose+' => \$verbose,
+	'nullval=s' => \$nullval, 'ignore_zero!' => \$ignore_zero, 'header_file=s' => \$header_file );
+
+if( !$oresult ){
+	die "Failed to parse program options.";
+}
+my $narg = @ARGV;
+
+if ( $narg < 1 ){
+	print "\nToo few arguments on input line. See help:\n\n";
+	print_help();
+}
+elsif( $help > 0 ){
+	print_help();
+}
+
+sub print_help{
+	print "$0 <csv file> [csv file] ...  
+	[-maxid (n)]
+	[-help]
+	[-id_var_name : id variable name]
+	[-tvn : target variable name]
+	[-nullval : Value indicating null (default=-1)]
+	[-verbose]
+	[-header_file : Since crs takes no header, use this option to create a separate header file!]
+	[-ignore_zero : This is the default: plain zeros NOT discarded. So negate this if you want to discard them (-no-ignore_zero)!]
+\n"
+	exit();
+}
+
+if( !defined( $target ) ){
+	warn "Warning, target variable not specified!";
+}
+
+my $hfp;
+if( defined( $header_file ) ){
+	my $date = `date "+%F (%A) %T %Z"`;
+	chomp $date;
+	open $hfp, ">$header_file" or die "Could not open file $headerfile";
+	$verbose and to_stderr( "Opened header file: $header_file");
+	print $hfp "# $date : $arguments\n";
+}
+
+my $csv = Text::CSV_XS->new ({ binary => 1 });
+foreach my $ifile (@ARGV){
+	if( -e $ifile ){
+		$verbose and to_stderr( "Reading file: $ifile");
+		open my $ifp, $ifile or die "Could not open $ifile: $!";
+		my $header_ref;
+		my @ha;
+		my $headcnt = 0;
+		do{
+			$header_ref = $csv->getline ($ifp);
+			@ha = @$header_ref;
+			$csv->combine(@ha);
+			my $line = $csv->string();
+			if( $line =~ /^\#/ and defined( $header_file ) ){
+				print $hfp $line,"\n";
+			}
+			$headcnt++;
+		}
+		while( $ha[0] =~ /^\#/ );
+		my @key = @$header_ref;   
+		my $nkeys = @key;
+		my %varno;
+		defined( $header_file ) and print $hfp "\#";
+		for( my $i = 0; $i < $nkeys; $i++ ){
+			$verbose and to_stderr( "Found file variable: $key[$i]");
+			$varno{$key[$i]} = $i;             # key to variable number map. : variable name -> number 
+			defined( $header_file ) and print $hfp " $i:$key[$i]";
+		}
+		defined( $header_file and print $hfp "\n";
+		if( defined( $target) and !defined( $varno{$target} ) ){
+			die "target variable not identified.";
+		}
+		if( !defined( $varno{$id_var_name} ) ){
+			die "id variable ($id_var_name) not located in file.";
+		}
+		while (my $row = $csv->getline ($ifp)) {
+			if(!( $$row[0] =~ /^\#/) ){
+				my $ncol = @$row; 
+				my $id = $$row[$varno{$id_var_name}];
+				my $val = defined( $target ) ? $$row[$varno{$target}] : -1;
+				print $val;
+				for( my $i=0; $i<$ncol; $i++ ){
+					if( (!defined( $target) or $i != $varno{$target}) and $i != $varno{$id_var_name}  
+							and  ( $ignore_zero or $$row[$i] ne "0" ) 
+							and $$row[$i] ne "$nullval"  ){
+						print " $i:$$row[$i]";
+					}
+				}
+				print "\n";
+			}
+		}
+		close( $ifp );
+	}
+	else{
+		die "File $ifile does not exist!";
+	}
+}
+
+sub to_stderr{
+	print STDERR @_,"\n";
+}
+
