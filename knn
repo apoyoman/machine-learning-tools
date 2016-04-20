@@ -1,0 +1,527 @@
+#!/usr/bin/perl -w
+#
+# knn.pl
+#
+# K nearest neighbor.
+#
+# Nov 23 2015
+#
+# Version 1 randomly selects events from training set if not using full set.
+#
+# Updated March 25, 2016
+#
+# Fixed bug where the k-nearest candidates were not correctly compared with their replacement candidates. 
+# Now the indices of the candidates are first sorted and the replacement is inserted directly into the modified index when the candidate is closer.
+#
+# April 19, 2016 
+# Added calculation of the aposteriori probability and an option to negate its calculation.
+# Fixed square root in Euclidean normalization
+# 
+use strict;
+use Text::CSV_XS;
+use Getopt::Long;
+
+my $nltest;
+my $nltrain;
+my $best_exp;
+my $best_kth = 0;
+my $args = join ' ', @ARGV;
+my $factor = 10;
+my $min = -5;
+my $max = 5;
+my $ofile;
+my $threshold_multiplier = 0;
+my $inv = 0;
+my $best = 1000000000000000000;
+my $test = 0;
+my $nclose = 38;
+my $help = 0;
+my $nck = 10000;
+my $seed = 3294;
+my $repeat_random_sequence = 0;
+my $do_id = 0;
+my $do_dot = 0;
+my $id_var_name = "t_id";
+my $target = "target";
+my $normalize = 0;
+my $verbose = 0;
+my $gamma = 0.01;
+my $rcut = 1.0e30;
+my $bayes = 1;
+
+my $oresult = GetOptions(  'nltest=i' => \$nltest,   'nltrain=i' => \$nltrain, 
+			'best_exp=s' => \$best_exp, 'min=s' => \$min, 'max=s' => \$max, 'sf=s' => \$factor,
+			'o=s' => \$ofile, 'inv+' => \$inv, 'tm=s' => \$threshold_multiplier, 
+			'test+' => \$test, 'best_kth=s' => \$best_kth, 'k=i' => \$nclose, 
+			'h+' => \$help, 'nck=i' => \$nck, 'seed=i' => \$seed, 'id+' => \$do_id, 'dp+' => \$do_dot,
+			'id_var_name=s' => \$id_var_name, 'tvn=s' => \$target, 'verbose+' => \$verbose,
+			'repeat_random_sequence+' => \$repeat_random_sequence, 'gamma=s' => \$gamma,
+			'rcut=s' => \$rcut, 'bayes!' => \$bayes, 'norm=i' => \$normalize  );
+
+my $narg = @ARGV;
+if( $narg != 2 or $help > 0 or $oresult == 0 ){
+	die "$0 <training data file> <test file> 
+			[-verbose]
+			[-nltest (int) number of test file lines to read] 
+			[-nltrain (int) number of training file lines to read] 
+			[-best_exp ] 
+			[-min (i)] [-max (i)] 
+			[-sf : scoring factor (f)] 
+			[-o output file]
+			[-inv take reciprocal of k series] 
+			[-tm threshold multiplier (f)]
+			[-test use for test data] 
+			[-best_kth best k-threshold] 
+			[-k k-closest] [-seed random seed for sample of training set]
+			[-h this help summary]
+			[-id Utilize the information distance]
+			[-dp Utilize dot product]
+			[-id_var_name]
+			[-tvn target variable name]
+			[-norm : 1 for Euclidean normalization, 2 for probability normalization (default=0, none)]
+			[-repeat_random_sequence]
+			[-gamma : likelihood += 1 / ( gamma + distance) ]
+			[-nobayes : do not multiply likelihood by prior to obtain aposteriori probability (default=1)]
+			\n";
+}
+my $train_file = shift;
+my $test_file = shift;
+
+
+my $date = `date "+%F (%A) %T %Z"`;
+chomp $date;
+
+my @train;
+my @test;
+my @test_header;
+my @train_header;
+my @test_id;
+my @train_id;
+my @test_truth;
+my @train_truth;
+my @train_vars;
+my @test_vars;
+
+if( !$repeat_random_sequence ){
+	srand( $seed );
+}
+to_stderr( "# $date : $0 $args\n");
+
+my $ntrain = read_data( $train_file, \@train_header, \@train_id, \@train, \@train_truth, $nltrain, \@train_vars );
+my $ntest = read_data( $test_file, \@test_header, \@test_id, \@test, \@test_truth, $nltest, \@test_vars );
+
+my %varno;
+my %target_no;
+my @target_truth;
+my $ntest_vars = @test_vars;
+my @prob_dist;
+my $tcntr = 0;
+my @closest;
+my %prior;
+my @prior;
+
+for( my $i=0; $i< $ntrain; $i++ ){
+	defined( $train_truth[$i] ) or die "No truth found for datum no $i.";
+	if( !defined( $target_no{$train_truth[$i]} ) ){
+		$target_truth[$tcntr] = $train_truth[$i];
+		$prior[$tcntr] = $prior{$train_truth[$i]} / $ntrain;
+		$target_no{$train_truth[$i]}= $tcntr++;
+		to_stderr( "Found target: $train_truth[$i]\n");
+	}
+}
+
+for( my $i=0; $i< $ntest_vars; $i++ ){
+	my $v = $test_vars[$i];
+	$varno{$v} = $i;
+	to_stderr( "found test variable: $v\n");
+}
+
+if( $normalize == 1 ){
+	euclidean_normalize( \@train );
+	euclidean_normalize( \@test );
+}
+elsif( $normalize == 2 ){
+	probability_normalize( \@train );
+	probability_normalize( \@test );
+}
+
+my @distance;
+sub closest_sort_func{
+	my $da = $distance[$a];
+	my $db = $distance[$b];
+	$da <=> $db;
+}
+my @null;
+for( my $k = 0; $k<$ntest; $k++ ){
+	my @test_vec = @{ $test[$k] };
+	@distance = @null;
+	my @kclosest;
+	for( my $j = 0; $j<$nclose; $j++ ){
+		my @train_vec =  @{ $train[$j] };
+		$distance[$j] = euclid(  \@train_vec, \@test_vec );
+		#( $do_id * $do_dot > 0 ? ( $do_dot > 0 ? 
+		#	&dot_product( \@train_vec, \@test_vec ) 
+		#		: &information_distance(  \@train_vec, \@test_vec ) ) 
+		#		: &euclid( \@train_vec, \@test_vec ) );
+		push @kclosest, $j;
+	}
+	my @tmp = sort closest_sort_func @kclosest;
+	@kclosest = @tmp;
+	for( my $j = $nclose; $j<$ntrain; $j++ ){
+		my @train_vec = @{ $train[$j] };
+		$distance[$j] = euclid(  \@train_vec, \@test_vec );
+		#$distance[$j] = ( $do_id * $do_dot > 0 ? ( $do_dot > 0 ? 
+		#	  &dot_product( \@train_vec, \@test_vec ) 
+		#		#: &information_distance(  \@train_vec, \@test_vec ) ) 
+		#	: &euclid( \@train_vec, \@test_vec ) );
+		for( my $m=0; $m< $nclose; $m++ ){
+			my $kclose = $kclosest[$m];
+			if( $distance[$j] < $distance[$kclose] ){
+				my @rest = splice( @kclosest, $m );
+				$kclosest[$m] = $j;
+				push @kclosest, splice( @rest, 0, $nclose - $m - 1);
+				last;
+			}
+		} 
+	}# now have collected the nclosest training events.
+	my $sump = 0;	
+	my $pmax = 0;
+	my @prob;
+	for( my $i=0; $i<$tcntr; $i++ ){
+		my $p=0;
+		for( my $j=0; $j<$nclose; $j++ ){
+			my $kclose = $kclosest[$j];
+			if( $distance[$kclose] > $rcut ){
+				last;
+			}
+			if( $train_truth[$kclose] eq $target_truth[$i] ){
+				$p += 1/($gamma + $distance[$kclose]);
+			}
+		}
+		$p = ( $p + 1 )/ ( $nclose + $tcntr + 1 );
+		$p *= $bayes ? $prior[$i] : 1;
+		push @prob, $p;
+		$sump += $p;
+	}
+	for( my $i=0; $i<$tcntr; $i++ ){
+		$prob_dist[$k][$i] = $prob[$i] / $sump;
+	}
+	my @cid;
+	for( my $j=0; $j<$nclose; $j++ ){
+		my $kclose = $kclosest[$j];
+		push @cid, "$train_id[$kclose]:$distance[$kclose]";
+	}
+
+	my $outline = join ',',$test_id[$k],@cid, @{ $prob_dist[$k] },$test_truth[$k];
+	print $outline,"\n";
+	if( ($k+1) % $nck == 0 ){
+		to_stderr( "Finished analyzing $k events...\n");
+	}
+}
+to_stderr( "\nFinished knn analysis, $ntest test lines and $ntrain train lines\n");
+
+if( !defined( $best_exp ) and !$test ){
+	to_stderr( "Now search for best exponent for best log-loss.\n");
+	for( my $k = $min; $k <= $max; $k++ ){ 
+		if( $inv > 0 ){
+			logloss( 1 + $k/$factor, $k);
+		}
+		else{
+			logloss(1/( 1 + $k/$factor), $k);
+		}
+	}
+	to_stderr( "Best logloss = $best , best exp = $best_exp\n");
+}
+elsif( !$test ){
+	logloss($best_exp,);
+	to_stderr( "Log-loss = $best\n");
+}
+	
+
+if( defined( $ofile) ){
+	open( OFP, ">$ofile" ) or die "Could not open $ofile";
+	print OFP "# $date : $0 $args\n";
+	print OFP "# GAMMA $gamma\n";
+	print OFP "# BESTEXP $best_exp\n"; 
+	print OFP "# RCUT $rcut\n";
+	print OFP "# KCLOSEST $nclose\n"; 
+	if( !$test ){
+		print OFP "# Best logloss = $best\n";
+	}
+	if( defined( $best_exp ) ){
+		print OFP "# Rescore exponent = $best_exp\n";
+	}
+	my $nt = @test_truth;
+	my $tline;
+	if( defined( $nt ) ){
+		#my $nh = @test_header;
+		#$test_header[$nh-1] = $test_header[$nh-1] . ",truth";
+		$tline = join ',',"id",@target_truth,"truth";
+	}
+	else{ 
+		$tline = join ',',"id",@target_truth,"truth";
+	}
+
+	foreach my $header (@test_header){
+		print OFP "\# ",$header, "\n";
+	}
+	print OFP $tline,"\n"; 
+	for( my $i=0; $i<$ntest; $i++ ){
+		my @outline;
+		push @outline, $test_id[$i];
+		if( defined( $best_exp ) ){
+			foreach my $pi (@{ $prob_dist[$i] }){
+				my $sp = $pi**($best_exp);
+				$sp = $sp > $best_kth ? $sp : 0;
+				$sp = sprintf "%.7g", $sp;
+				push @outline, $sp;
+			}
+		}
+		else{
+			push @outline, @{ $prob_dist[$i] };
+		}
+		if( !$test ){
+			push @outline, $test_truth[$i];
+		}
+		my $outline = join ',',@outline;
+		print OFP $outline, "\n";
+	}
+}
+
+
+sub logloss{
+	my ($exp, $k) = @_;
+	my $score = 0;
+	for( my $i=0; $i<$ntest; $i++ ){
+		my $sump = 0;	
+		foreach my $pi (@{ $prob_dist[$i] }){
+			$sump += $pi**($exp);
+		}
+		my $ttt = $test_truth[$i];
+		if( !defined( $ttt ) ){
+			die "Undefined truth value: $ttt at indext $i";
+		}
+		my $p = ($prob_dist[$i][$target_no{$ttt}])**($exp);
+		#print "sump = $sump, p = $p\n";
+		$p = ( $sump != 0 ? $p / $sump : 0); # this is the only valid way to score!!!!!!!!!
+		$p = log( max( min( $p, 1 - 1.0e-15 ), 1.0e-15));
+		$score -= $p;
+	}
+	$score /= $ntest;
+	if( $score < $best ){
+		$best = $score;
+		$best_exp = $exp;
+	}
+	my $s = sprintf "%.4f\t%.4f\n",$exp,$score;
+	to_stderr( $s );
+	return;
+}
+
+
+sub min {
+	my ($v1, $v2) = @_;
+	return $v1 < $v2 ? $v1 : $v2;
+}
+
+sub max {
+	my ($v1, $v2 ) = @_;
+	return $v1 > $v2 ? $v1 : $v2;
+}
+
+sub cosine_distance{
+	my ( $v1, $v2 ) = @_;
+	my $n = length( @$v1 );
+
+	my $dot = 0;
+	for( my $i=0; $i<$n; $i++ ){
+		$dot += $$v1[$i] * $$v2[$i];
+	}
+	return 1 - $dot;
+}
+
+sub dot_product{
+	my ( $v1, $v2 ) = @_;
+	my $n = length( @$v1 );
+
+	my $dist = 0;
+	for( my $i=0; $i<$n; $i++ ){
+		$dist += $$v1[$i] * $$v2[$i];
+	}
+	return $dist;
+}
+
+sub information_distance {
+	my ( $v1, $v2 ) = @_;
+	my $n = length( @$v1 );
+
+	my $dist = 0;
+	for( my $i=0; $i<$n; $i++ ){
+		my $l1 = ($$v1[$i] == 0 ? -34.53 : log( $$v1[$i]  ) );
+		my $l2 = ($$v2[$i] == 0 ? -34.53 : log( $$v2[$i]  ) );
+		my $delta = $l1 - $l2;
+		$dist += $$v1[$i] * $$v2[$i] * $delta;
+	}
+	return $dist;
+}
+
+
+sub read_data {
+	my ( $file, $fheader, $idr, $data, $t, $nlines, $varlist) = @_;
+	to_stderr( "Reading file: $file\n");
+	my $fp; 
+	my @buffer;
+	my $csv = Text::CSV_XS->new ({ binary => 1 });
+	open( $fp, $file ) or die "Could not open $file";
+	my $hl;
+	my $header_ref;
+	do{
+		$header_ref = $csv->getline ($fp);
+		my @ha = @$header_ref;
+		$hl = join ',', @ha;
+		push @{ $fheader }, $hl; # capture header lines
+	}
+	while( $hl =~ /^\#/  );
+	my @key = @$header_ref;    # get keys from header and parse
+	my $nkeys = @key;
+	my @sv;
+	to_stderr( "Found $nkeys header keys\n");
+	my %varno;
+	for( my $i = 0; $i < $nkeys; $i++ ){
+		$varno{$key[$i]} = $i;             # key to variable number map. : variable name -> number
+		if( $key[$i] ne $id_var_name and $key[$i] ne $target ){
+			push @sv, $key[$i];
+			to_stderr( "Study variable: $i\t$key[$i]\n");
+		}
+	}
+	@{ $varlist } = @sv;  # last header line contains the column names.	
+	if( defined( $varno{$id_var_name} ) ){
+		to_stderr( "Found id variable $id_var_name\n");
+	}
+	elsif( defined( $id_var_name ) ){
+		to_stderr( "Warning, id variable not found!\n");
+	}
+
+	if( defined( $varno{$target} ) ){
+		to_stderr( "Found target variable $target\n");
+	}
+	elsif( defined( $target ) ){
+		to_stderr( "Warning, target variable $target, not found\n");
+	}
+	my $N = 0;
+	my @est;
+	my @id;
+	my @target;
+	while (my $row = $csv->getline ($fp)) {
+		if( $$row[0] !~ /^\#/ ){
+			if( defined( $id_var_name ) ){
+				push @id, $$row[$varno{$id_var_name}];
+			}
+			else{
+				push @id, -($N+1);
+			}
+			if( defined( $varno{$target} ) ){
+				my $class = $$row[$varno{$target}];
+				$prior{$class}++;
+				push @target, $class; 
+			}
+			else{
+				push @target, -1;
+			}
+			my $vn=0;
+			foreach my $sv (@sv){
+				if( ( !defined($target) or $sv ne $target ) and ( !defined( $id_var_name ) or $sv ne $id_var_name ) ){
+					$buffer[$N][$vn++] = $$row[$varno{$sv}];
+				}
+			}
+			$N++;
+		}
+	}
+	close( $fp );
+	to_stderr( "Done reading $N data file lines from file $file\n");
+	if( defined( $nlines ) ){
+		if( $N < $nlines ){
+			$nlines = $N;
+		}
+		if( $repeat_random_sequence){ 
+			srand( $seed );
+		}
+		my %exists;	
+		my $ln = 0;
+		do{
+			my $i;
+			my $good_pick = 0;
+			do{
+				$i = int( rand($N) );
+				if( !defined( $exists{$i} ) ){
+					$exists{$i} = 1;
+					$good_pick = 1;
+				}
+			}
+			until( $good_pick > 0 );
+			push @{ $idr }, $id[$i];
+			push @{ $t }, $target[$i];
+			push @{ $$data[$ln++] }, @{ $buffer[$i] };
+		}
+		while($ln < $nlines );
+		to_stderr( "Done selecting $nlines lines from $file\n");
+		return( $nlines );
+	}
+	@{ $idr } = @id;
+	@{ $t } = @target;
+	@{ $data } = @buffer;
+	to_stderr( "Taking all $N events from file $file\n");
+	return $N;
+}
+
+sub euclidean_normalize {
+	my ( $buffer ) = @_;
+	my $ndat = @$buffer;
+	my $ncol = @{ $$buffer[0] };
+	for( my $i=0; $i<$ndat; $i++ ){
+		my $sump = 0;
+		foreach my $p ( @{ $$buffer[$i] } ){
+			$sump += $p*$p;  
+		}
+		$sump = sqrt( $sump );
+		for( my $k=0; $k<$ncol; $k++ ){
+			$$buffer[$i][$k] /= $sump;
+		}
+	}
+	to_stderr( "Euclidean normalized $ndat lines of data.\n");
+	return;
+}
+
+sub probability_normalize {
+	my ( $buffer ) = @_;
+	my $ndat = @$buffer;
+	my $ncol = @{ $$buffer[0] };
+	for( my $i=0; $i<$ndat; $i++ ){
+		my $sump = 0;
+		foreach my $p ( @{ $$buffer[$i] } ){ 	# if the quantities are probabilities (and not quantum mechanical probability amplitudes) 
+							# then this is the correct normalization.
+			$sump += $p;
+		}
+		for( my $k=0; $k<$ncol; $k++ ){
+			$$buffer[$i][$k] /= $sump;
+		}
+	}
+	to_stderr( "Probability normalized $ndat lines of data.\n");
+	return;
+}
+
+
+sub euclid {
+	my ( $v1, $v2 ) = @_;
+	my $n = length( @$v1 );
+	my $dist = 0;
+	for( my $i=0; $i<$n; $i++ ){
+		my $delta = $$v1[$i] - $$v2[$i];
+		$dist += $delta**2;
+	}
+	return sqrt( $dist );
+}
+
+sub to_stderr{
+	print STDERR @_;
+	return;
+}
