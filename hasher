@@ -1,0 +1,189 @@
+#!/usr/bin/perl -w
+#
+# create_hashes.pl 
+#
+# 
+use strict;
+use Text::CSV_XS;
+use Getopt::Long;
+
+my $help =0;
+my $maxline=10000000000000000000;
+my $target = "Response";
+my $id_var_name = "Id";
+my $debug = 0;
+my $nhash = 10;
+my $wsplit = 3;
+my $rseed = 1382;
+my $minsplit = $wsplit;
+my $vfile;
+my $noscale = 0;
+
+my $arguments = join ' ', $0, @ARGV;
+my $oresult = GetOptions( 'maxline=i' => \$maxline,  
+	'help+' => \$help, 'tvn=s' => \$target, 'id_var_name=s' => \$id_var_name, 'debug+' => \$debug,
+	'nhash=i' => \$nhash, 'wsplit=s' => \$wsplit, 'rseed=i' => $rseed, 'vfile=s' => \$vfile, 'minsplit=s' => \$minsplit,
+	'noscale+' => \$noscale );
+
+if( !$oresult ){
+	die "Failed to parse program options.";
+}
+my $narg = @ARGV;
+if ( $narg < 1 or $help > 0 ){
+	print "$0 <input file> [input file]  
+	[-maxline (n)]
+	[-help]
+	[-id_var_name id variable name]
+	[-tvn target variable name]
+	[-nhash number of hashes to generate per row (default=10)]
+	[-vfile variable description file]
+	[-rseed seed for rand (default=1382)]
+	[-wsplit number of splits along dimension (default=3)]
+	[-minsplit minimum number of splits along dimension (when specified a progression is made from the maximum (wsplit) to this minimum)]
+	[-noscale (default=false)]
+\n";
+	die "Exiting help";
+}
+
+my @width;
+my $widthmin = 1/$wsplit;
+my $widthmax = 1/$minsplit;
+my $dw = ($widthmax - $widthmin)/$nhash;
+srand( $rseed );
+my @wshift; 
+my $date = `date "+%F (%A) %T %Z"`;
+chomp $date;
+print "\# $date : $arguments\n";
+print "\# NHASH $nhash\n";
+print "\# WIDTHMIN $widthmin\n";
+print "\# WIDTHMAX $widthmax\n";
+print "\# WIDTHS";
+for(my $k=0; $k<$nhash; $k++ ){
+	$width[$k] = $widthmin + $k * $dw;
+	print " $width[$k]";
+}
+print "\n";
+print "\# RSEED $rseed\n";
+print "\# VFILE $vfile\n";
+my $csv = new Text::CSV_XS({ binary => 1 });
+my %minval;
+my %delta;
+my @sv;
+my $nsv;
+if( defined( $vfile ) ){
+	open my $vfp, $vfile or die "Could not open $vfile: $!";
+	while( my $lr = $csv->getline($vfp) ){
+		if( $$lr[0] !~ /^\#/ and $$lr[1] =~ /[\d.]+/ ){
+			my $var = $$lr[0];
+			push @sv, $var;
+			$minval{$var} = $$lr[1];
+			#$ave{$var} = $$lr[2];
+			#$sigma{$var} = $$lr[3];
+			#$maxval{$var} = $$lr[4];
+			$delta{$var} = $noscale ? 1 : $$lr[4] - $$lr[1];
+		}
+	}
+	$nsv = @sv;
+	if( $nsv == 0 ){
+		die "Could not read stats file";
+	}
+	close( $vfp );
+}
+else{
+	die "stats file not found";
+}
+my @file = @ARGV;
+for( my $i=0; $i<$nhash; $i++ ){
+	print "\# WSHIFT";
+	for( my $j=0; $j<$nsv; $j++ ){
+		$wshift[$i][$j] = rand() * $width[$i];
+		print " $wshift[$i][$j]";
+	}
+	print "\n";
+}
+
+print $id_var_name;
+for( my $i=0; $i<$nhash;$i++){
+	print ",HASH$i";
+}
+print ",$target\n";
+
+
+
+foreach my $ifile (@file){
+	to_stderr( "Analyze file: $ifile\n" );
+	open my $ifp, $ifile or die "Could not open $ifile: $!";
+	my $header_ref;
+	my @header;
+	my @ha;
+	my $headcnt = 0;
+	do{
+		$header_ref = $csv->getline ($ifp);
+		@ha = @$header_ref;
+		$csv->combine(@ha);
+		my $line = $csv->string();
+		push @header, $line;
+		$headcnt++;
+	}
+	while( $ha[0] =~ /\#/ );
+	my @key = @$header_ref;   
+	my $nkeys = @key;
+	my %varno;
+	for( my $i = 0; $i < $nkeys; $i++ ){
+		$debug and to_stderr( "Found file variable: $key[$i]\n");
+		$varno{$key[$i]} = $i;             # key to variable number map. : variable name -> number 
+	}
+	$debug and to_stderr( "\n");
+
+	if( defined( $varno{$id_var_name} ) ){
+		$debug and to_stderr( "Found id variable name: $id_var_name\n");
+	}
+	else{
+		to_stderr("Warning, could not find id variable: $id_var_name for file $ifile\n");
+	}
+
+	if( defined( $varno{$target} ) ){
+		$debug and to_stderr( "Found target: $target\n");
+	}
+	else{
+		to_stderr("Warning, could not find target variable: $target for file $ifile\n");
+	}
+
+	my $ndata = 0;
+	while( my $lr = $csv->getline($ifp) ){
+		if( $$lr[0] !~ /\#/ ){
+			$ndata++;
+			if( defined( $varno{$id_var_name} ) ){
+				print $$lr[$varno{$id_var_name}];
+			}
+			else{
+				print -$ndata;
+			}
+			for( my $i=0; $i<$nhash; $i++){
+				my $hash;
+				for( my $j=0; $j<$nsv; $j++ ){
+					my $varname = $sv[$j];
+					my $iv = $varno{$varname};
+					my $t = int( ($$lr[$iv] - $minval{$varname} + $wshift[$i][$j] )/( $width[$i] * $delta{$varname} ) );
+					$hash = $hash . sprintf "%lx", $t;
+				}
+				print ",$hash";
+			}
+			if( defined( $varno{$target} ) ){
+				print ",$$lr[$varno{$target}]";
+			}
+			else{
+				print ",-1";
+			}
+			print "\n";
+			if( $ndata > $maxline ){
+				last;
+			}
+		}
+	}
+	close($ifp);
+}
+
+sub to_stderr{
+	print STDERR @_;
+}
