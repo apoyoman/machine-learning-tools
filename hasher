@@ -2,7 +2,9 @@
 #
 # create_hashes.pl 
 #
-# 
+# April 20, 2016
+# Added option to normalize values with sigma instead of variable range.
+#
 use strict;
 use Text::CSV_XS;
 use Getopt::Long;
@@ -11,19 +13,20 @@ my $help =0;
 my $maxline=10000000000000000000;
 my $target = "Response";
 my $id_var_name = "Id";
-my $debug = 0;
+my $verbose = 0;
 my $nhash = 10;
 my $wsplit = 3;
 my $rseed = 1382;
-my $minsplit = $wsplit;
+my $minsplit;
 my $vfile;
 my $noscale = 0;
+my $sigma_scaling = 0;
 
 my $arguments = join ' ', $0, @ARGV;
 my $oresult = GetOptions( 'maxline=i' => \$maxline,  
-	'help+' => \$help, 'tvn=s' => \$target, 'id_var_name=s' => \$id_var_name, 'debug+' => \$debug,
+	'help+' => \$help, 'tvn=s' => \$target, 'id_var_name=s' => \$id_var_name, 'verbose+' => \$verbose,
 	'nhash=i' => \$nhash, 'wsplit=s' => \$wsplit, 'rseed=i' => $rseed, 'vfile=s' => \$vfile, 'minsplit=s' => \$minsplit,
-	'noscale+' => \$noscale );
+	'noscale+' => \$noscale, 'sigma_scaling+' => \$sigma_scaling );
 
 if( !$oresult ){
 	die "Failed to parse program options.";
@@ -33,26 +36,42 @@ if ( $narg < 1 or $help > 0 ){
 	print "$0 <input file> [input file]  
 	[-maxline (n)]
 	[-help]
-	[-id_var_name id variable name]
-	[-tvn target variable name]
-	[-nhash number of hashes to generate per row (default=10)]
-	[-vfile variable description file]
-	[-rseed seed for rand (default=1382)]
-	[-wsplit number of splits along dimension (default=3)]
-	[-minsplit minimum number of splits along dimension (when specified a progression is made from the maximum (wsplit) to this minimum)]
+	[-id_var_name : id variable name]
+	[-tvn target : variable name]
+	[-nhash : number of hashes to generate per row (default=10)]
+	[-vfile : variable description file]
+	[-rseed : seed for rand (default=1382)]
+	[-wsplit : number of splits along dimension (default=3)]
+	[-minsplit : minimum number of splits along dimension (when specified a progression is made from the maximum (wsplit) to this minimum)]
 	[-noscale (default=false)]
+	[-sigma_scaling : scale columns by the RMSD instead of range (default=use range). Note that this option takes precedence over noscale.
+			  * Also note that under this option wsplit is the maximimum number of sigma used to split along a principal component, 
+			  not the number of splits, and that minsplit represents the least number of sigma used in the split.]
 \n";
-	die "Exiting help";
+	exit();
+}
+
+if( !defined( $minsplit ) ){
+	$minsplit = $wsplit;
 }
 
 my @width;
-my $widthmin = 1/$wsplit;
-my $widthmax = 1/$minsplit;
+my $widthmin;
+my $widthmax;
+if( $sigma_scaling ){
+	$widthmin = $minsplit;
+	$widthmax = $wsplit;
+}
+else{
+	$widthmin = 1/$wsplit;
+	$widthmax = 1/$minsplit;
+}
 my $dw = ($widthmax - $widthmin)/$nhash;
 srand( $rseed );
 my @wshift; 
 my $date = `date "+%F (%A) %T %Z"`;
 chomp $date;
+$verbose and to_stderr( "\# $date : $arguments\n");
 print "\# $date : $arguments\n";
 print "\# NHASH $nhash\n";
 print "\# WIDTHMIN $widthmin\n";
@@ -80,7 +99,12 @@ if( defined( $vfile ) ){
 			#$ave{$var} = $$lr[2];
 			#$sigma{$var} = $$lr[3];
 			#$maxval{$var} = $$lr[4];
-			$delta{$var} = $noscale ? 1 : $$lr[4] - $$lr[1];
+			if( $sigma_scaling ){
+				$delta{$var} = $$lr[3];
+			}
+			else{
+				$delta{$var} = $noscale ? 1 : $$lr[4] - $$lr[1];
+			}
 		}
 	}
 	$nsv = @sv;
@@ -130,20 +154,20 @@ foreach my $ifile (@file){
 	my $nkeys = @key;
 	my %varno;
 	for( my $i = 0; $i < $nkeys; $i++ ){
-		$debug and to_stderr( "Found file variable: $key[$i]\n");
+		$verbose and to_stderr( "Found file variable: $key[$i]\n");
 		$varno{$key[$i]} = $i;             # key to variable number map. : variable name -> number 
 	}
-	$debug and to_stderr( "\n");
+	$verbose and to_stderr( "\n");
 
 	if( defined( $varno{$id_var_name} ) ){
-		$debug and to_stderr( "Found id variable name: $id_var_name\n");
+		$verbose and to_stderr( "Found id variable name: $id_var_name\n");
 	}
 	else{
 		to_stderr("Warning, could not find id variable: $id_var_name for file $ifile\n");
 	}
 
 	if( defined( $varno{$target} ) ){
-		$debug and to_stderr( "Found target: $target\n");
+		$verbose and to_stderr( "Found target: $target\n");
 	}
 	else{
 		to_stderr("Warning, could not find target variable: $target for file $ifile\n");
@@ -182,6 +206,7 @@ foreach my $ifile (@file){
 		}
 	}
 	close($ifp);
+	$verbose and to_stderr("Done processing $ifile\n");
 }
 
 sub to_stderr{
