@@ -1,0 +1,355 @@
+#!/usr/bin/perl -w
+#
+# study_hashes.pl 
+#
+use strict;
+use Text::CSV_XS;
+use Getopt::Long;
+
+my $help =0;
+my $maxline=10000000000000000000;
+my $target = "Response";
+my $id_var_name = "Id";
+my $debug = 0;
+my $dwidth = 1;
+my $dim = 21;
+my $search_nearby = 0;
+my $gather;
+my $get_ids=0;
+my $svunico;
+
+my $arguments = join ' ', $0, @ARGV;
+my $oresult = GetOptions( 'maxline=i' => \$maxline,  
+	'help+' => \$help, 'tvn=s' => \$target, 'id_var_name=s' => \$id_var_name, 'debug+' => \$debug, 'dim=i' => \$dim, 
+	#'dwidth=i' => \$dwidth,
+	#'search_nearby+' => \$search_nearby, 
+	'gather=i' => \$gather, 'get_ids+' => \$get_ids, 'svunico=s' => \$svunico );
+
+if( !$oresult ){
+	die "Failed to parse program options.";
+}
+my $narg = @ARGV;
+if ( $narg != 2 ){
+	to_stderr( "\nNeed to specify training and test files on command line!\n\n");
+	print_help();
+}
+
+if( $help > 0 ){
+	print_help();
+}
+
+sub print_help{
+	print "$0 <training hashes file> <test hashes file>  
+	[-maxline (n)]
+	[-help]
+	[-debug]
+	[-id_var_name id variable name]
+	[-tvn target variable name]
+	[-dim i : set to -1 in case you are not sure. (default=21)]
+	[-gather]
+	[-get_ids]
+	[-svunico : name of hash variable to use exclusively.]
+\n";
+	exit();
+}
+my $date = `date "+%F (%A) %T %Z"`;
+chomp $date;
+print "\# $date : $arguments\n";
+my $csv = new Text::CSV_XS({ binary => 1 });
+my @sv;
+my $nsv;
+my @file = @ARGV;
+my %hash;
+my %train_id;
+my %test_id;
+my %train_hash;
+my %test_hash;
+my @testid;
+my @trainid;
+
+read_file( $file[0], 0 );
+read_file( $file[1], 1 );
+
+sub read_file{
+	my ($ifile, $test_file) = @_;
+	my $ftype = $test_file ? "test" : "training";
+	to_stderr( "Analysing $ftype file: $ifile\n" );
+	open my $ifp, $ifile or die "Could not open $ifile: $!";
+	my $header_ref;
+	my @header;
+	my @ha;
+	my $headcnt = 0;
+	do{
+		$header_ref = $csv->getline ($ifp);
+		@ha = @$header_ref;
+		$csv->combine(@ha);
+		my $line = $csv->string();
+		if( $line =~ /^\#/ ){
+			push @header, $line;
+			$headcnt++;
+		}
+	}
+	while( $ha[0] =~ /^\#/ );
+	my @key = @$header_ref;   
+	my $nkeys = @key;
+	my %varno;
+	my $id_var_no;
+	for( my $i = 0; $i < $nkeys; $i++ ){
+		$debug and to_stderr( "Found file variable: $key[$i]\n");
+		$varno{$key[$i]} = $i;             # key to variable number map. : variable name -> number 
+		if( $key[$i] ne $id_var_name and $key[$i] ne $target ){
+			push @sv, $key[$i];
+		}
+		elsif( $key[$i] eq $id_var_name ){
+			$id_var_no = $i;
+		}
+	}
+	$debug and to_stderr( "\n");
+	if(defined( $svunico ) ){
+		if( defined( $varno{$svunico} ) ){
+			@sv = ( $svunico );
+			$debug and to_stderr( "Will use hash $svunico exclusively.\n" );
+		}
+		else{
+			die "Study variable $svunico not found in data file variable list.";
+		}
+	}
+	$nsv = @sv;
+	if( defined( $varno{$id_var_name} ) ){
+		$debug and to_stderr( "Found id variable name: $id_var_name\n");
+	}
+	else{
+		to_stderr("Warning, could not find id variable: $id_var_name for file $ifile\n");
+	}
+
+	if( defined( $varno{$target} ) ){
+		$debug and to_stderr( "Found target: $target\n");
+	}
+	else{
+		to_stderr("Warning, could not find target variable: $target for file $ifile\n");
+	}
+
+	my $ndata = 0;
+	while( my $lr = $csv->getline($ifp) ){
+		if( $$lr[0] !~ /\#/ ){
+			my $id = $$lr[$id_var_no];
+			$ndata++;
+			my %vid;
+			if( $test_file ){
+				push @testid, $id;
+			}
+			else{
+				push @trainid, $id;
+			}
+			foreach my $v (@sv){
+				my $val = $$lr[$varno{$v}];
+				my $l = length( $val );
+				if( $ndata == 1 and $dim == -1 ){
+					print "Estimated number of dimensions for $v is $l. Is this the value of d that you want to use (y/n)? : ";
+					my $yn = <STDIN>;
+					chomp $yn;
+					if( $yn =~ /^[yY]+$/ ){
+						print " OK!\n";
+						$dim = $l;
+					}
+					else{
+						print "Then please enter number of dimensions now (or -1 if you still dont know)! (int) : ";
+						$dim = <STDIN>;
+						chomp $dim;
+						if( $dim !~ /^[0-9]+$/ ){
+							die "OK, cant proceed without knowning the number of dimensions of the hash!";
+						}
+					}
+				}	
+				if( $l != $dim ){
+					die "Hash length $l of $v ($val) does not equal proscribed dimension $dim";
+				}
+				if( defined( $hash{$v}{$val} ) ){
+					$hash{$v}{$val}++;
+				}
+				else{
+					$hash{$v}{$val} = 1;
+				}
+				if( $test_file ){
+					$test_hash{$v}{$id} = $val; 
+				}
+				else{
+					push @{ $train_id{$v}{ $val } }, $id;
+				}
+			}
+			if( $ndata > $maxline ){
+				last;
+			}
+		}
+	}
+	close($ifp);
+}
+my %hist;
+my %null;
+foreach my $v (keys %hash ){
+	foreach my $h (keys %{ $hash{$v} } ){
+		if( defined ( $hist{$v}{ $hash{$v}{$h} } ) ){
+			$hist{$v}{ $hash{$v}{$h} }++;
+		}
+		else{
+			$hist{$v}{ $hash{$v}{$h} } = 1;
+		}
+	}
+}
+%hash = %null;
+my @sum;
+my $i = 0;
+foreach my $v (sort keys %hist){
+	$sum[$i] = 0;
+	foreach my $cnt (sort num_sort_func keys %{ $hist{$v} } ){
+		$sum[$i] += $hist{$v}{$cnt};
+	}
+	$i++;
+}
+$i=0;
+foreach my $v (sort keys %hist){
+	print $v,":\n";
+	foreach my $cnt (sort num_sort_func keys %{ $hist{$v} }){
+		print "$cnt\t$hist{$v}{$cnt}\t$sum[$i]\n";
+		$sum[$i] -= $hist{$v}{$cnt};
+	}
+	$i++;
+}
+my %id;
+my %count;
+my %hp;
+sub get_permutations{
+	my @undef;
+	my ( $h ) = @_;
+	if( defined( $hp{$h} ) ){
+		$debug and to_stderr( "Found nearby hashes!\n");
+		return @{ $hp{$h} };
+	}
+	for( my $i=0; $i<$dim; $i++ ){
+		my $n = substr( $h,$i*$dwidth,$dwidth);
+		my $prefix = substr($h,0,$i*$dwidth);
+		my $postfix = substr($h,$i*$dwidth,($dim-$i-1)*$dwidth);
+		if( $n > 0 ){
+			my $new_digit = $n-1;
+			my $new_hash = $prefix . $new_digit . $postfix;
+			$debug and to_stderr( "\t$i:$new_hash" );
+			if( defined( $train_id{$new_hash} ) ){
+				$debug and to_stderr( ":1" );
+				push @{ $hp{$h} }, $new_hash;
+			}
+			else{
+				$debug and to_stderr( ":0" );
+			}
+
+		}
+		my $cmax = -1;
+		if( $n < $cmax ){
+			my $new_digit = $n+1;
+			my $new_hash = $prefix . $new_digit . $postfix;
+			$debug and to_stderr( "\t$i:$new_hash" );
+			if( defined( $train_id{$new_hash} ) ){
+				$debug and to_stderr( ":1" );
+				push @{ $hp{$h} }, $new_hash;
+			}
+			else{
+				$debug and to_stderr( ":0" );
+			}
+		}
+	}
+	$debug and to_stderr("\n");
+	if( defined ( $hp{$h} ) ){
+		$debug and to_stderr( "Found nearby hashes!\n");
+		return @{ $hp{$h} };
+		#die "No permutations found for $h!";
+	}
+	$debug and to_stderr( "NO nearby hashes Found!\n");
+	return @undef;
+}
+#$| = 1;
+my $ndone = 0;
+foreach my $id (@testid){
+	my %idid;
+	my @array;
+	$debug and to_stderr("$id,\t");
+	if( 0 and $search_nearby ){
+		my @s = @{$test_hash{$id}};
+		foreach my $h (@s){
+			my @temp = get_permutations( $h );
+			if( @temp ){
+				push @s, @temp; 
+			}
+		}
+		foreach my $h (@s){
+			foreach my $train (@{ $train_id{$h} }){
+				if( !defined( $idid{$train} ) ){
+					$idid{$train} = 1;
+					#push @{ $id{$id} },$train;
+					push @array,$train;
+				}
+			}
+		}
+	}
+	else{
+		my $nogathered=0;
+		foreach my $v ( @sv ){
+			my $h = $test_hash{$v}{$id};
+			foreach my $train (@{ $train_id{$v}{$h} }){
+				if( !defined( $idid{$train} ) ){
+					$idid{$train} = 1;
+					#push @{ $id{$id} },$train;
+					$nogathered++;
+					push @array,$train;
+					if( defined( $gather ) and $nogathered >= $gather ){
+						last;
+					}
+				}
+			}
+			if( defined( $gather ) and $nogathered >= $gather ){
+				last;
+			}
+		}
+	}
+	my $n = @array;
+	if( $get_ids ){
+		my $line = join ',', @array;
+		print "$id,$n,$line\n";
+	}
+	if( defined( $count{$n} ) ){
+		$count{$n}++;
+	}
+	else{
+		$count{$n} = 1;
+	}
+	if( ++$ndone% 10000 == 0 ){
+		to_stderr( "Finished counting $ndone events...\n" );
+	}
+}
+
+print "Test ID to Train ID counts:\n ";
+my $s = 0;
+foreach my $cnt (sort num_sort_func keys %count){
+	print "$cnt\t$count{$cnt}\n";
+	$s += $count{$cnt};
+}
+print "total:\t$s\n";
+
+sub num_sort_func{
+	return $a <=> $b;
+}
+
+sub to_stderr{
+	print STDERR @_;
+	return;
+}
+
+sub euclid {
+	my ( $v1, $v2 ) = @_;
+	my $n = length( @$v1 );
+	my $dist = 0;
+	for( my $i=0; $i<$n; $i++ ){
+		my $delta = $$v1[$i] - $$v2[$i];
+		$dist += $delta**2;
+	}
+	return sqrt( $dist );
+}
+
