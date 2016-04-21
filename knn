@@ -72,7 +72,8 @@ if( $narg != 2 or $help > 0 or $oresult == 0 ){
 			[-tm threshold multiplier (f)]
 			[-test use for test data] 
 			[-best_kth best k-threshold] 
-			[-k k-closest] [-seed random seed for sample of training set]
+			[-k k-closest] 
+			[-seed random seed for sample of training set]
 			[-h this help summary]
 			[-id Utilize the information distance]
 			[-dp Utilize dot product]
@@ -108,7 +109,12 @@ if( !$repeat_random_sequence ){
 to_stderr( "# $date : $0 $args\n");
 
 my $ntrain = read_data( $train_file, \@train_header, \@train_id, \@train, \@train_truth, $nltrain, \@train_vars );
+$date = `date "+%F (%A) %T %Z"`;
+to_stderr( "#1 $date");
+
 my $ntest = read_data( $test_file, \@test_header, \@test_id, \@test, \@test_truth, $nltest, \@test_vars );
+$date = `date "+%F (%A) %T %Z"`;
+to_stderr( "#2 $date");
 
 my %varno;
 my %target_no;
@@ -129,12 +135,16 @@ for( my $i=0; $i< $ntrain; $i++ ){
 		to_stderr( "Found target: $train_truth[$i]\n");
 	}
 }
+$date = `date "+%F (%A) %T %Z"`;
+to_stderr( "#3 $date");
 
 for( my $i=0; $i< $ntest_vars; $i++ ){
 	my $v = $test_vars[$i];
 	$varno{$v} = $i;
 	to_stderr( "found test variable: $v\n");
 }
+$date = `date "+%F (%A) %T %Z"`;
+to_stderr( "#4 $date");
 
 if( $normalize == 1 ){
 	euclidean_normalize( \@train );
@@ -144,6 +154,8 @@ elsif( $normalize == 2 ){
 	probability_normalize( \@train );
 	probability_normalize( \@test );
 }
+$date = `date "+%F (%A) %T %Z"`;
+to_stderr( "#5 $date");
 
 my @distance;
 sub closest_sort_func{

@@ -37,13 +37,13 @@ if ( $narg < 1 or $help > 0 ){
 	[-maxline (n)]
 	[-help]
 	[-id_var_name : id variable name]
-	[-tvn target : variable name]
+	[-tvn : target variable name]
 	[-nhash : number of hashes to generate per row (default=10)]
 	[-vfile : variable description file]
 	[-rseed : seed for rand (default=1382)]
 	[-wsplit : number of splits along dimension (default=3)]
 	[-minsplit : minimum number of splits along dimension (when specified a progression is made from the maximum (wsplit) to this minimum)]
-	[-noscale (default=false)]
+	[-noscale : do not scale columns (default=false)]
 	[-sigma_scaling : scale columns by the RMSD instead of range (default=use range). Note that this option takes precedence over noscale.
 			  * Also note that under this option wsplit is the maximimum number of sigma used to split along a principal component, 
 			  not the number of splits, and that minsplit represents the least number of sigma used in the split.]
@@ -84,6 +84,7 @@ for(my $k=0; $k<$nhash; $k++ ){
 print "\n";
 print "\# RSEED $rseed\n";
 print "\# VFILE $vfile\n";
+my $ncharmax = 1;
 my $csv = new Text::CSV_XS({ binary => 1 });
 my %minval;
 my %delta;
@@ -105,6 +106,12 @@ if( defined( $vfile ) ){
 			else{
 				$delta{$var} = $noscale ? 1 : $$lr[4] - $$lr[1];
 			}
+			my $maxhex = sprintf "%lx", int(($$lr[4] - $$lr[1] ) / ($delta{$var} * $widthmin ));
+			my $nchar_dim = length( $maxhex );
+			$verbose and to_stderr( "$var $maxhex $nchar_dim\n" );
+			if( $nchar_dim > $ncharmax){
+				$ncharmax = $nchar_dim;
+			}
 		}
 	}
 	$nsv = @sv;
@@ -116,6 +123,7 @@ if( defined( $vfile ) ){
 else{
 	die "stats file not found";
 }
+print "\# NCHAR_DIM $ncharmax\n";
 my @file = @ARGV;
 for( my $i=0; $i<$nhash; $i++ ){
 	print "\# WSHIFT";
@@ -189,7 +197,7 @@ foreach my $ifile (@file){
 					my $varname = $sv[$j];
 					my $iv = $varno{$varname};
 					my $t = int( ($$lr[$iv] - $minval{$varname} + $wshift[$i][$j] )/( $width[$i] * $delta{$varname} ) );
-					$hash = $hash . sprintf "%lx", $t;
+					$hash = $hash . sprintf "%0${ncharmax}lx", $t;
 				}
 				print ",$hash";
 			}
